@@ -322,6 +322,16 @@ func NewJobController(config *rest.Config, schedulerName string, isDispatcher bo
 				switch t := obj.(type) {
 				case *arbv1.AppWrapper:
 					glog.V(4).Infof("Filter AppWrapper name(%s) namespace(%s) State:%+v\n", t.Name, t.Namespace,t.Status)
+
+					//DEBUG BEGIN
+					newQJ, ok := obj.(*arbv1.AppWrapper)
+					if !ok {
+						glog.Errorf("newObj is not AppWrapper")
+					} else {
+						glog.V(4).Infof("DEBUG: Filter AppWrapper name(%s) resource version: %s, message= %s\n", newQJ.Name,
+							newQJ.ResourceVersion, newQJ.Status.Message)
+					}
+					//DEBUG END
 					return true
 				default:
 					return false
@@ -376,7 +386,7 @@ func (qjm *XController) PreemptQueueJobs() {
 			continue
 		}
 		newjob.Status.CanRun = false
-		if _, err := qjm.arbclients.ArbV1().AppWrappers(q.Namespace).Update(newjob); err != nil {
+		if _, err := qjm.arbclients.ArbV1().AppWrappers(q.Namespace).UpdateStatus(newjob); err != nil {
 			glog.Errorf("Failed to update status of AppWrapper %v/%v: %v",
 				q.Namespace, q.Name, err)
 		}
@@ -574,7 +584,7 @@ func (qjm *XController) ScheduleNext() {
 			apiQueueJob.Status.CanRun = true
 			// qj.Status.CanRun = true
 			glog.V(10).Infof("[TTime] %s, %s: ScheduleNextBeforeEtcd", qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
-			if _, err := qjm.arbclients.ArbV1().AppWrappers(qj.Namespace).Update(apiQueueJob); err != nil {
+			if _, err := qjm.arbclients.ArbV1().AppWrappers(qj.Namespace).UpdateStatus(apiQueueJob); err != nil {
 				glog.Errorf("Failed to update status of AppWrapper %v/%v: %v",
 																	qj.Namespace, qj.Name, err)
 			}
@@ -606,10 +616,20 @@ func (qjm *XController) ScheduleNext() {
 			glog.V(10).Infof("[TTime]%s:  %s, ScheduleNextBeforeEtcd duration timestamp: %s", time.Now().String(), qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
 			apiQueueJob.Status.CanRun = true
 			qj.Status.CanRun = true
-			if _, err := qjm.arbclients.ArbV1().AppWrappers(qj.Namespace).Update(apiQueueJob); err != nil {
+			apiQueueJob.Status.Message = "Message 1"
+			if _, err := qjm.arbclients.ArbV1().AppWrappers(qj.Namespace).UpdateStatus(apiQueueJob); err != nil {
 													glog.Errorf("Failed to update status of AppWrapper %v/%v: %v",
 																	qj.Namespace, qj.Name, err)
 			}
+			//DEBUG BEGIN
+			apiQueueJob, e = qjm.queueJobLister.AppWrappers(qj.Namespace).Get(qj.Name)
+			if e != nil {
+				return
+			}
+
+			apiQueueJob.Status.Message = "Message 2"
+			glog.V(4).Infof("[DEBUG]%s: %s, ScheduleNext message: %s", time.Now().String(), qj.Name, apiQueueJob.Status.Message)
+			//DEBUG END
 			glog.V(10).Infof("[TTime]%s: %s, ScheduleNextAfterEtcd duration timestamp: %s", time.Now().String(), qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
 		} else {
 			// start thread to backoff
@@ -790,7 +810,7 @@ func (cc *XController) updateQueueJobStatus(queueJobFromAgent *arbv1.AppWrapper)
 	}
 	new_flag := queueJobFromAgent.Status.State
 	queueJobInEtcd.Status.State = new_flag
-	_, err = cc.arbclients.ArbV1().AppWrappers(queueJobInEtcd.Namespace).Update(queueJobInEtcd)
+	_, err = cc.arbclients.ArbV1().AppWrappers(queueJobInEtcd.Namespace).UpdateStatus(queueJobInEtcd)
 	if err != nil {
 		return err
 	}
@@ -905,7 +925,7 @@ func (cc *XController) manageQueueJob(qj *arbv1.AppWrapper) error {
 
 			qj.Status.State = arbv1.AppWrapperStateEnqueued
 			glog.V(10).Infof("[TTime] %s, %s: WorkerBeforeEtcd", qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
-			_, err = cc.arbclients.ArbV1().AppWrappers(qj.Namespace).Update(qj)
+			_, err = cc.arbclients.ArbV1().AppWrappers(qj.Namespace).UpdateStatus(qj)
 			if err != nil {
 				return err
 			}
@@ -955,7 +975,7 @@ func (cc *XController) manageQueueJob(qj *arbv1.AppWrapper) error {
 			}
 
 			// TODO(k82cn): replaced it with `UpdateStatus`
-			if _, err := cc.arbclients.ArbV1().AppWrappers(qj.Namespace).Update(qj); err != nil {
+			if _, err := cc.arbclients.ArbV1().AppWrappers(qj.Namespace).UpdateStatus(qj); err != nil {
 				glog.Errorf("Failed to update status of AppWrapper %v/%v: %v",
 					qj.Namespace, qj.Name, err)
 				return err
@@ -992,7 +1012,7 @@ func (cc *XController) manageQueueJob(qj *arbv1.AppWrapper) error {
 			}
 
 			qj.Status.State = arbv1.AppWrapperStateEnqueued
-			_, err = cc.arbclients.ArbV1().AppWrappers(qj.Namespace).Update(qj)
+			_, err = cc.arbclients.ArbV1().AppWrappers(qj.Namespace).UpdateStatus(qj)
 			if err != nil {
 				return err
 			}
@@ -1025,7 +1045,7 @@ func (cc *XController) manageQueueJob(qj *arbv1.AppWrapper) error {
 			glog.V(10).Infof("[Dispatcher Controller] XQJ %s has Overhead After Dispatching: %s", qj.Name,current_time.Sub(qj.CreationTimestamp.Time))
 			glog.V(10).Infof("[TTime] %s, %s: WorkerAfterDispatch", qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
 			}
-			if _, err := cc.arbclients.ArbV1().AppWrappers(qj.Namespace).Update(qj); err != nil {
+			if _, err := cc.arbclients.ArbV1().AppWrappers(qj.Namespace).UpdateStatus(qj); err != nil {
 				glog.Errorf("Failed to update status of AppWrapper %v/%v: %v",
 					qj.Namespace, qj.Name, err)
 				return err
