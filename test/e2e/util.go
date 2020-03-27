@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/kubernetes/test/e2e/framework"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -433,6 +434,21 @@ func createReplicaSet(context *context, name string, rep int32, img string, req 
 	Expect(err).NotTo(HaveOccurred())
 
 	return deployment
+}
+
+func createDeploymentAW2(context *context, fileName string) *arbv1.AppWrapper {
+	awYaml := mkPath(fileName)
+	nsFlag := fmt.Sprintf("--namespace=%v", "test")
+
+	framework.RunKubectlOrDie("create", "-f", awYaml, nsFlag)
+	objJson := framework.RunKubectlOrDie("get", "-f", awYaml, nsFlag, "-o json")
+	aw := &arbv1.AppWrapper{}
+	//data := &Data{
+	//	Votes: &Votes{},
+	//}
+	err := json.Unmarshal([]byte(objJson), aw)
+	Expect(err).NotTo(HaveOccurred())
+	return aw
 }
 
 func createDeploymentAW(context *context, name string) *arbv1.AppWrapper {
@@ -897,4 +913,8 @@ func preparePatchBytesforNode(nodeName string, oldNode *v1.Node, newNode *v1.Nod
 	}
 
 	return patchBytes, nil
+}
+
+func mkPath(file string) string {
+	return filepath.Join(framework.TestContext.RepoRoot, "test/e2e/testfiiles", file)
 }
