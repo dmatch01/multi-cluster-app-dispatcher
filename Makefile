@@ -1,5 +1,5 @@
 BIN_DIR=_output/bin
-RELEASE_VER=v1.17
+RELEASE_VER=v1.18
 CURRENT_DIR=$(shell pwd)
 #MCAD_REGISTRY=$(shell docker ps --filter name=mcad-registry | grep -v NAME)
 #LOCAL_HOST_NAME=localhost
@@ -38,7 +38,7 @@ ifeq ($(strip $(dockerhub_repository)),)
 	$(info variables do not need to be set for github Travis CICD.)
 else
 	$(info Log into dockerhub)
-	echo ${dockerhub_token} | docker login -u ${dockerhub_id} --password-stdin
+	docker login -u ${dockerhub_id} --password ${dockerhub_token}
 	$(info Tag the latest image)
 	docker tag mcad-controller:${RELEASE_VER}  ${dockerhub_repository}/mcad-controller:${RELEASE_VER}
 	$(info Push the docker image to registry)
