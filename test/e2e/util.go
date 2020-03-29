@@ -916,5 +916,6 @@ func preparePatchBytesforNode(nodeName string, oldNode *v1.Node, newNode *v1.Nod
 }
 
 func mkPath(file string) string {
-	return filepath.Join(framework.TestContext.RepoRoot, "test/e2e/testfiiles", file)
+	return filepath.Join("test/e2e/testfiiles", file)
 }
+
