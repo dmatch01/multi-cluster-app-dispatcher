@@ -65,7 +65,7 @@ var _ = Describe("Predicates E2E Test", func() {
 		context := initTestContext()
 		defer cleanupTestContext(context)
 
-		aw := createDeploymentAW(context,"aw-deployment.yaml")
+		aw := createDeploymentAW2(context,"aw-deployment.yaml")
 
 		err := waitAWReady(context, aw)
 
