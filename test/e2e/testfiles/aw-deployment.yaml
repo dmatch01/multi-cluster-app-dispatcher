@@ -1,0 +1,39 @@
+apiVersion: arbitrator.incubator.k8s.io/v1alpha1
+kind: AppWrapper
+metadata:
+  name: aw-deployment
+  namespace: test
+spec:
+  schedSpec:
+    minAvailable: 1
+  resources:
+    Items:
+    - replicas: 1
+      type: Deployment
+      template:
+        apiVersion: apps/v1beta1
+        kind: Deployment
+        metadata:
+          name: aw-deployment
+          labels:
+            app: aw-deployment
+        spec:
+          selector:
+            matchLabels:
+              app: aw-deployment
+          replicas: 1 
+          template:
+            metadata:
+              labels:
+                app: aw-deployment
+            spec:
+              containers:
+               - name: aw-deployment
+                 image: gcr.io/hello-minikube-zero-install/hello-node
+                 resources:
+                   limits:
+                     cpu: 125m
+                     memory: 32Mi
+                   requests:
+                     cpu: 125m
+                     memory: 32Mi
