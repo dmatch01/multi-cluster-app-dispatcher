@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"runtime/debug"
 	"time"
 
 	arbv1 "github.com/IBM/multi-cluster-app-dispatcher/pkg/apis/controller/v1alpha1"
@@ -72,6 +73,11 @@ func (gr *GenericResources) SyncQueueJob(aw *arbv1.AppWrapper, awr *arbv1.AppWra
 
 	startTime := time.Now()
 	defer func() {
+		if err := recover(); err != nil {
+			glog.Errorf("[ScheduleNext] Error processing job from queue, err=%+v", err)
+			glog.Errorf("[ScheduleNext] Stack trace: %s", string(debug.Stack()))
+		}
+
 		glog.V(4).Infof("Finished syncing AppWrapper job resource %s (%v)", aw.Name, time.Now().Sub(startTime))
 		// glog.V(4).Infof("Finished syncing AppWrapper job resource %q (%v)", awobRes.Template, time.Now().Sub(startTime))
 	}()
@@ -81,7 +87,12 @@ func (gr *GenericResources) SyncQueueJob(aw *arbv1.AppWrapper, awr *arbv1.AppWra
 	dd := gr.clients.Discovery()
 	apigroups, err := restmapper.GetAPIGroupResources(dd)
 	if err != nil {
-		glog.Fatal(err)
+		//PerformanceBug glog.Fatal(err)
+		//PerformanceBug - begin
+		glog.Errorf("ReST Mapper GetAPIGroupResources failure: `%v`", err)
+		return []*v1.Pod{}, err
+		//PerformanceBug - end
+
 	}
 	ext := awr.GenericTemplate
 	restmapper := restmapper.NewDiscoveryRESTMapper(apigroups)
@@ -105,12 +116,22 @@ func (gr *GenericResources) SyncQueueJob(aw *arbv1.AppWrapper, awr *arbv1.AppWra
 	}
 	dclient, err := dynamic.NewForConfig(restconfig)
 	if err != nil {
-		glog.Fatal(err)
+		//PerformanceBug glog.Fatal(err)
+
+		//PerformanceBug - begin
+		glog.Errorf("New dlient config from raw object: `%v`", err)
+		return []*v1.Pod{}, err
+		//PerformanceBug - end
 	}
 
 	apiresourcelist, err := dd.ServerResources()
 	if err != nil {
-		glog.Fatal(err)
+		//PerformanceBug - begin
+		glog.Errorf("Server resource error from raw object: `%v`", err)
+		return []*v1.Pod{}, err
+		//PerformanceBug - end
+
+		//PerformanceBug glog.Fatal(err)
 	}
 
 	rsrc := mapping.Resource
@@ -128,7 +149,12 @@ func (gr *GenericResources) SyncQueueJob(aw *arbv1.AppWrapper, awr *arbv1.AppWra
 	unstruct.Object = make(map[string]interface{})
 	var blob interface{}
 	if err = json.Unmarshal(ext.Raw, &blob); err != nil {
-		glog.Fatal(err)
+		//PerformanceBug glog.Fatal(err)
+		//PerformanceBug - begin
+		glog.Errorf("Unmarshalling from raw object: `%v`", err)
+		return []*v1.Pod{}, err
+		//PerformanceBug - end
+
 	}
 	ownerRef := metav1.NewControllerRef(aw, appWrapperKind)
 	unstruct.Object = blob.(map[string]interface{}) //set object to the content of the blob after Unmarshalling
@@ -260,17 +286,27 @@ func hasFields(obj runtime.RawExtension) (hasFields bool, replica float64, conta
 	unstruct.Object = make(map[string]interface{})
 	var blob interface{}
 	if err := json.Unmarshal(obj.Raw, &blob); err != nil {
-		glog.Fatal(err)
+		//PerformanceBug glog.Fatal(err)
+		//PerformanceBug - begin
+		glog.Errorf("Unmarshalling from raw object: `%v`", err)
+		return false, 0, []v1.Container{}
+		//PerformanceBug - end
+
 	}
 	unstruct.Object = blob.(map[string]interface{})
 	spec, isFound, _ := unstructured.NestedMap(unstruct.UnstructuredContent(), "spec")
+	var possiblePodSpec map[string]interface{}
 	replicas, isFound, _ := unstructured.NestedFloat64(spec, "replicas")
 	if !isFound {
-		return false, 0, nil
+		replicas = 1
+		possiblePodSpec = spec
+	} else {
+		template, _, _ := unstructured.NestedMap(spec, "template")
+		subspec, _, _ := unstructured.NestedMap(template, "spec")
+		possiblePodSpec = subspec
 	}
-	template, isFound, _ := unstructured.NestedMap(spec, "template")
-	subspec, isFound, _ := unstructured.NestedMap(template, "spec")
-	containerList, isFound, _ := unstructured.NestedSlice(subspec, "containers")
+
+	containerList, isFound, _ := unstructured.NestedSlice(possiblePodSpec, "containers")
 	if !isFound {
 		return false, 0, nil
 	}
@@ -346,16 +382,6 @@ func GetResources(awr *arbv1.AppWrapperGenericResource) (resource *clusterstatea
 func getPodResources(pod arbv1.CustomPodResourceTemplate) (resource *clusterstateapi.Resource) {
 	replicas := pod.Replicas
 	req := clusterstateapi.NewResource(pod.Requests)
-	limit := clusterstateapi.NewResource(pod.Limits)
-	if req.MilliCPU < limit.MilliCPU {
-		req.MilliCPU = limit.MilliCPU
-	}
-	if req.Memory < limit.Memory {
-		req.Memory = limit.Memory
-	}
-	if req.GPU < limit.GPU {
-		req.GPU = limit.GPU
-	}
 	req.MilliCPU = req.MilliCPU * float64(replicas)
 	req.Memory = req.Memory * float64(replicas)
 	req.GPU = req.GPU * int64(replicas)
@@ -364,17 +390,6 @@ func getPodResources(pod arbv1.CustomPodResourceTemplate) (resource *clusterstat
 
 func getContainerResources(container v1.Container, replicas float64) *clusterstateapi.Resource {
 	req := clusterstateapi.NewResource(container.Resources.Requests)
-	limit := clusterstateapi.NewResource(container.Resources.Limits)
-	if req.MilliCPU < limit.MilliCPU {
-
-		req.MilliCPU = limit.MilliCPU
-	}
-	if req.Memory < limit.Memory {
-		req.Memory = limit.Memory
-	}
-	if req.GPU < limit.GPU {
-		req.GPU = limit.GPU
-	}
 	req.MilliCPU = req.MilliCPU * float64(replicas)
 	req.Memory = req.Memory * float64(replicas)
 	req.GPU = req.GPU * int64(replicas)
