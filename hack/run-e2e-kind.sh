@@ -20,10 +20,10 @@ curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add
 echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | sudo tee -a /etc/apt/sources.list.d/kubernetes.list
 sudo apt-get update
 # Using older version due to older version of kubernetes cluster"
-sudo apt-get install -y  kubectl=1.11.10-00
+sudo apt-get install -y  kubectl=1.17.0-00
 
 # Download kind binary (0.2.0)
-sudo curl -o /usr/local/bin/kind -L https://github.com/kubernetes-sigs/kind/releases/download/v0.3.0/kind-linux-amd64
+sudo curl -o /usr/local/bin/kind -L https://github.com/kubernetes-sigs/kind/releases/download/v0.7.0/kind-linux-amd64
 sudo chmod +x /usr/local/bin/kind
 
 # check if kind installed
@@ -259,7 +259,7 @@ function kube-test-env-up {
     echo "Installing Helm Client..."
     curl https://raw.githubusercontent.com/kubernetes/helm/master/scripts/get > install-helm.sh
     chmod u+x install-helm.sh
-    ./install-helm.sh --version v2.16.3
+    ./install-helm.sh --version v2.17.0
 
     # Start Helm Server
     echo "Installing Helm Server..."
