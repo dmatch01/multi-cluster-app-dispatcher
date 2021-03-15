@@ -112,6 +112,19 @@ var (
 		},
 		{
 			info: provider.ExternalMetricInfo{
+				Metric: "queue-external-metric",
+			},
+			labels: map[string]string{"cluster": "queue-count"},
+			Value: external_metrics.ExternalMetricValue{
+				MetricName: "cluster-external-metric",
+				MetricLabels: map[string]string{
+					"cluster": "queue-count",
+				},
+				Value: *resource.NewQuantity(0, resource.DecimalSI),
+			},
+		},
+		{
+			info: provider.ExternalMetricInfo{
 				Metric: "other-external-metric",
 			},
 			labels: map[string]string{},
@@ -378,8 +391,14 @@ func (p *testingProvider) GetExternalMetric(namespace string, metricSelector lab
 
 				glog.V(10).Infof("Setting cpu metric Value: %v.", resources.MilliCPU)
 				metricValue.Value = *resource.NewQuantity(int64(resources.MilliCPU), resource.DecimalSI)
+			} else if strings.Compare(labelVal, "queue-count") == 0 {
+				// Set size of queue Value
+				//resources := p.cache2.GetUnallocatedResources()
+
+				glog.V(10).Infof("Setting queue size metric Value: %f.", 9)
+				metricValue.Value = *resource.NewQuantity(int64(9), resource.DecimalSI)
 			} else {
-				glog.V(10).Infof("Not setting cpu/memory metric Value")
+				glog.V(10).Infof("Not setting cpu/memory/queue-size metric Value")
 			}
 
 			metricValue.Timestamp = metav1.Now()
