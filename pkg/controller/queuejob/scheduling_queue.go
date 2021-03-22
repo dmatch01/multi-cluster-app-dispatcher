@@ -51,6 +51,7 @@ type SchedulingQueue interface {
 	IfExistActiveQ(QJ *qjobv1.AppWrapper) bool
 	IfExistUnschedulableQ(QJ *qjobv1.AppWrapper) bool
 	Length() int
+	List() []qjobv1.AppWrapper
 }
 
 
@@ -152,9 +153,6 @@ func (p *PriorityQueue) MoveToActiveQueueIfExists(aw *qjobv1.AppWrapper) error {
 	return nil
 }
 
-
-
-
 // Add adds a QJ to the active queue. It should be called only when a new QJ
 // is added so there is no chance the QJ is already in either queue.
 func (p *PriorityQueue) Add(qj *qjobv1.AppWrapper) error {
@@ -191,6 +189,19 @@ func (p *PriorityQueue) AddIfNotPresent(qj *qjobv1.AppWrapper) error {
 		p.cond.Broadcast()
 	}
 	return err
+}
+
+// List AppWrappers
+func (p *PriorityQueue) List() []qjobv1.AppWrapper {
+	p.lock.Lock()
+	defer p.lock.Unlock()
+	aQList := p.activeQ.List()
+	qlist := make([]qjobv1.AppWrapper, 0, len(aQList))
+	for _, obj := range aQList {
+		aw := obj.(*qjobv1.AppWrapper)
+		aQList = append(aQList, aw)
+	}
+	return (qlist)
 }
 
 func isPodUnschedulable(qj *qjobv1.AppWrapper) bool {

@@ -17,6 +17,7 @@ limitations under the License.
 package cache
 
 import (
+	"github.com/IBM/multi-cluster-app-dispatcher/pkg/apis/controller/v1alpha1"
 	"github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/clusterstate/api"
 )
 
@@ -37,4 +38,7 @@ type Cache interface {
 
 	// Obtains current cluster unallocated resources.
 	GetUnallocatedResources() *api.Resource
+
+	// Obtains list of jobs in queue
+	GetJobsQueued() []*v1alpha1.AppWrapper
 }

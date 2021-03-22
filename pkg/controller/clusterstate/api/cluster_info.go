@@ -15,13 +15,18 @@ limitations under the License.
 */
 package api
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/IBM/multi-cluster-app-dispatcher/pkg/apis/controller/v1alpha1"
+)
 
 // ClusterInfo is a snapshot of cluster by cache.
 type ClusterInfo struct {
 	Jobs []*JobInfo
 
 	Nodes []*NodeInfo
+
+	AWJobs[]*v1alpha1.AppWrapper
 }
 
 func (ci ClusterInfo) String() string {

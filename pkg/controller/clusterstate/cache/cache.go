@@ -18,6 +18,7 @@ package cache
 
 import (
 	"fmt"
+	"github.com/IBM/multi-cluster-app-dispatcher/pkg/apis/controller/v1alpha1"
 	"sync"
 	"time"
 
@@ -49,10 +50,12 @@ type ClusterStateCache struct {
 
 	podInformer            clientv1.PodInformer
 	nodeInformer           clientv1.NodeInformer
+	awInformer             arbclient.AppWrapperInformer
 	schedulingSpecInformer arbclient.SchedulingSpecInformer
 
-	Jobs  map[api.JobID]*api.JobInfo
-	Nodes map[string]*api.NodeInfo
+	Jobs        map[api.JobID]*api.JobInfo
+	Nodes       map[string]*api.NodeInfo
+	AppWrappers map[string]*v1alpha1.AppWrapper
 
 	availableResources *api.Resource
 	resourceCapacities *api.Resource
@@ -93,6 +96,7 @@ func newClusterStateCache(config *rest.Config) *ClusterStateCache {
 	sc := &ClusterStateCache{
 		Jobs:        make(map[api.JobID]*api.JobInfo),
 		Nodes:       make(map[string]*api.NodeInfo),
+		AppWrappers: make(map[string]*v1alpha1.AppWrapper),
 		errTasks:    cache.NewFIFO(taskKey),
 		deletedJobs: cache.NewFIFO(jobKey),
 
@@ -144,9 +148,18 @@ func newClusterStateCache(config *rest.Config) *ClusterStateCache {
 		panic(err)
 	}
 
-	schedulingSpecInformerFactory := informerfactory.NewSharedInformerFactory(queueClient, 0)
+	mcadInformerFactory := informerfactory.NewSharedInformerFactory(queueClient, 0)
+
+	sc.awInformer = mcadInformerFactory.AppWrapper().AppWrappers()
+	sc.awInformer.Informer().AddEventHandler(
+		cache.ResourceEventHandlerFuncs{
+			AddFunc:    sc.AddAppWrapper,
+			UpdateFunc: sc.UpdateAppWrapper,
+			DeleteFunc: sc.DeleteAppWrapper,
+		})
+
 	// create informer for Queue information
-	sc.schedulingSpecInformer = schedulingSpecInformerFactory.SchedulingSpec().SchedulingSpecs()
+	sc.schedulingSpecInformer = mcadInformerFactory.SchedulingSpec().SchedulingSpecs()
 	sc.schedulingSpecInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    sc.AddSchedulingSpec,
 		UpdateFunc: sc.UpdateSchedulingSpec,
@@ -165,6 +178,7 @@ func (sc *ClusterStateCache) Run(stopCh <-chan struct{}) {
 	go sc.podInformer.Informer().Run(stopCh)
 	go sc.nodeInformer.Informer().Run(stopCh)
 	go sc.schedulingSpecInformer.Informer().Run(stopCh)
+	go sc.awInformer.Informer().Run(stopCh)
 
 	// Update cache
 	go sc.updateCache()
@@ -181,6 +195,7 @@ func (sc *ClusterStateCache) WaitForCacheSync(stopCh <-chan struct{}) bool {
 	return cache.WaitForCacheSync(stopCh,
 		sc.podInformer.Informer().HasSynced,
 		sc.schedulingSpecInformer.Informer().HasSynced,
+		sc.awInformer.Informer().HasSynced,
 		sc.nodeInformer.Informer().HasSynced)
 }
 
@@ -192,6 +207,18 @@ func (sc *ClusterStateCache) GetUnallocatedResources() *api.Resource {
 
 	r := api.EmptyResource()
 	return r.Add(sc.availableResources)
+}
+
+func (sc *ClusterStateCache) GetJobsQueued() []*v1alpha1.AppWrapper {
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+
+	r := []*v1alpha1.AppWrapper{}
+	for _, aw := range sc.AppWrappers {
+		awCopy := aw.DeepCopy()
+		r = append(r, awCopy)
+	}
+	return r
 }
 
 // Gets the full capacity of resources in the cluster
@@ -325,10 +352,12 @@ func (sc *ClusterStateCache) Snapshot() *api.ClusterInfo {
 	snapshot := &api.ClusterInfo{
 		Nodes: make([]*api.NodeInfo, 0, len(sc.Nodes)),
 		Jobs:  make([]*api.JobInfo, 0, len(sc.Jobs)),
+		AWJobs: make([]*v1alpha1.AppWrapper, 0, len(sc.AppWrappers)),
 	}
 
-	for _, value := range sc.Nodes {
-		snapshot.Nodes = append(snapshot.Nodes, value.Clone())
+	for _, aw := range sc.AppWrappers {
+		awCopy := aw.DeepCopy()
+		snapshot.AWJobs = append(snapshot.AWJobs, awCopy)
 	}
 
 	for _, value := range sc.Jobs {

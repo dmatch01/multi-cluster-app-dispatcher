@@ -18,6 +18,7 @@ package provider
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -116,9 +117,35 @@ var (
 			},
 			labels: map[string]string{"cluster": "queue-count"},
 			Value: external_metrics.ExternalMetricValue{
-				MetricName: "cluster-external-metric",
+				MetricName: "queue-external-metric",
 				MetricLabels: map[string]string{
 					"cluster": "queue-count",
+				},
+				Value: *resource.NewQuantity(0, resource.DecimalSI),
+			},
+		},
+		{
+			info: provider.ExternalMetricInfo{
+				Metric: "cluster-capacity-external-metric",
+			},
+			labels: map[string]string{"cluster": "cpu-capacity"},
+			Value: external_metrics.ExternalMetricValue{
+				MetricName: "cluster-capacity-external-metric",
+				MetricLabels: map[string]string{
+					"cluster": "cpu-capacity",
+				},
+				Value: *resource.NewQuantity(0, resource.DecimalSI),
+			},
+		},
+		{
+			info: provider.ExternalMetricInfo{
+				Metric: "cluster-capacity-external-metric",
+			},
+			labels: map[string]string{"cluster": "memory-capacity"},
+			Value: external_metrics.ExternalMetricValue{
+				MetricName: "cluster-capacity-external-metric",
+				MetricLabels: map[string]string{
+					"cluster": "memory-capacity",
 				},
 				Value: *resource.NewQuantity(0, resource.DecimalSI),
 			},
@@ -145,7 +172,7 @@ type testingProvider struct {
 	valuesLock      sync.RWMutex
 	values          map[CustomMetricResource]resource.Quantity
 	externalMetrics []ExternalMetric
-	cache2			clusterstatecache.Cache
+	cache2		clusterstatecache.Cache
 
 }
 
@@ -157,7 +184,7 @@ func NewFakeProvider(client dynamic.Interface, mapper apimeta.RESTMapper, cluste
 		mapper:          mapper,
 		values:          make(map[CustomMetricResource]resource.Quantity),
 		externalMetrics: testingExternalMetrics,
-		cache2:			 clusterStateCache,
+		cache2:		clusterStateCache,
 	}
 	return provider, provider.webService()
 }
@@ -361,6 +388,103 @@ func (p *testingProvider) ListAllMetrics() []provider.CustomMetricInfo {
 	return metrics
 }
 
+// Hack to dynamically load metrics
+func (p *testingProvider) generateQueueSpecs(clusternum int, jobname string, runtime metav1.Duration) (external_metrics.ExternalMetricValue, external_metrics.ExternalMetricValue){
+	cpuMetric := external_metrics.ExternalMetricValue{}
+	memMetric := external_metrics.ExternalMetricValue{}
+	cpuMetric.MetricName = "queue-external-metric"
+	memMetric.MetricName = "queue-external-metric"
+	clusterName := "cluster" + strconv.Itoa(clusternum)
+	window := runtime.Duration.String()
+
+	cpuLabels := map[string]string {
+		"clusterID": clusterName,
+		"jobID": jobname,
+		"resource": "cpu",
+		"starttimestamp": "2021-03-02T18:00:00Z",
+		"window": window,
+	}
+	memLabels := map[string]string {
+		"clusterID": clusterName,
+		"jobID": jobname,
+		"resource": "memory",
+		"starttimestamp": "2021-03-02T18:00:00Z",
+		"window": window,
+	}
+	cpuMetric.MetricLabels = cpuLabels
+	memMetric.MetricLabels = memLabels
+	cpuMetric.Timestamp = metav1.Now()
+	cpuMetric.Value = *resource.NewQuantity(int64(1000), resource.DecimalSI)
+	memMetric.Timestamp = cpuMetric.Timestamp
+	memMetric.Value = *resource.NewQuantity(int64(1000000000), resource.DecimalSI)
+	return cpuMetric, memMetric
+}
+
+
+// Hack to dynamically load cluster capacity metrics
+func (p *testingProvider) generateClusterCapacitySpecs(clusternum int, resourceType string, resourceAmount int) external_metrics.ExternalMetricValue{
+	metric := external_metrics.ExternalMetricValue{}
+	metric.MetricName = "cluster-capacity-external-metric"
+	clusterName := "cluster" + strconv.Itoa(clusternum)
+	metricLabels := map[string]string {
+		"clusterID": clusterName,
+		"resource": resourceType,
+	}
+	metric.MetricLabels = metricLabels
+	metric.Timestamp = metav1.Now()
+	metric.Value = *resource.NewQuantity(int64(resourceAmount), resource.DecimalSI)
+	return metric
+}
+
+// Hack to dynamically load queue metrics
+func (p *testingProvider) loadDynamicQueueMetrics(matchingMetrics []external_metrics.ExternalMetricValue,
+				) []external_metrics.ExternalMetricValue {
+	runtime := metav1.Duration{ 600 * time.Second}
+	cpuMetric, memoryMetric := p.generateQueueSpecs(1,"default/job1", runtime)
+	matchingMetrics = append(matchingMetrics, cpuMetric)
+	matchingMetrics = append(matchingMetrics, memoryMetric)
+
+	runtime = metav1.Duration{ 36000 * time.Second}
+	cpuMetric, memoryMetric = p.generateQueueSpecs(1,"default/job2",runtime)
+	matchingMetrics = append(matchingMetrics, cpuMetric)
+	matchingMetrics = append(matchingMetrics, memoryMetric)
+
+	jobs := p.cache2.GetJobsQueued()
+	for _, job := range jobs {
+		jobname := job.Namespace + "/" + job.Name
+		runtime = metav1.Duration{ 7200 * time.Second}
+		cpuMetric, memoryMetric = p.generateQueueSpecs(1,jobname,runtime)
+		matchingMetrics = append(matchingMetrics, cpuMetric)
+		matchingMetrics = append(matchingMetrics, memoryMetric)
+	}
+	return matchingMetrics
+}
+
+// Hack to dynamically load cluster memory capacity metrics
+func (p *testingProvider) loadDynamicClusterCapacityMemoryMetrics(
+	              matchingMetrics []external_metrics.ExternalMetricValue) []external_metrics.ExternalMetricValue {
+
+	memoryMetric := p.generateClusterCapacitySpecs(1, "memory",10000000000)
+	matchingMetrics = append(matchingMetrics, memoryMetric)
+
+
+	memoryMetric = p.generateClusterCapacitySpecs(2, "memory",10000000000)
+	matchingMetrics = append(matchingMetrics, memoryMetric)
+
+	return matchingMetrics
+}
+// Hack to dynamically load cluster memory capacity metrics
+func (p *testingProvider) loadDynamicClusterCapacityCpuMetrics(
+	matchingMetrics []external_metrics.ExternalMetricValue) []external_metrics.ExternalMetricValue {
+
+	cpuMetric := p.generateClusterCapacitySpecs(1, "cpu",100000)
+	matchingMetrics = append(matchingMetrics, cpuMetric)
+
+	cpuMetric = p.generateClusterCapacitySpecs(2, "cpu",100000)
+	matchingMetrics = append(matchingMetrics, cpuMetric)
+	return matchingMetrics
+}
+
 func (p *testingProvider) GetExternalMetric(namespace string, metricSelector labels.Selector,
 				info provider.ExternalMetricInfo) (*external_metrics.ExternalMetricValueList, error) {
 	glog.V(10).Infof("Entered GetExternalMetric()")
@@ -397,6 +521,31 @@ func (p *testingProvider) GetExternalMetric(namespace string, metricSelector lab
 
 				glog.V(10).Infof("Setting queue size metric Value: %f.", 9)
 				metricValue.Value = *resource.NewQuantity(int64(9), resource.DecimalSI)
+
+				//Hack to set dynamic metrics
+				matchingMetrics = p.loadDynamicQueueMetrics(matchingMetrics)
+				continue
+			} else if strings.Compare(labelVal, "memory-capacity") == 0 {
+				// Set cpu Value
+				//resources := p.cache2.GetUnallocatedResources()
+				//glog.V(9).Infof("Cache resources: %f", resources)
+
+				glog.V(10).Infof("Setting memory-capacity metric Value: %v.", 7)
+				metricValue.Value = *resource.NewQuantity(int64(7), resource.DecimalSI)
+
+				matchingMetrics = p.loadDynamicClusterCapacityMemoryMetrics(matchingMetrics)
+				continue
+			} else if strings.Compare(labelVal, "cpu-capacity") == 0 {
+				// Set cpu Value
+				//resources := p.cache2.GetUnallocatedResources()
+				//glog.V(9).Infof("Cache resources: %f", resources)
+
+				glog.V(10).Infof("Setting cpu-capacity metric Value: %v.", 8)
+				metricValue.Value = *resource.NewQuantity(int64(8), resource.DecimalSI)
+
+				matchingMetrics = p.loadDynamicClusterCapacityCpuMetrics(matchingMetrics)
+				continue
+
 			} else {
 				glog.V(10).Infof("Not setting cpu/memory/queue-size metric Value")
 			}

@@ -470,6 +470,105 @@ func (sc *ClusterStateCache) DeleteSchedulingSpec(obj interface{}) {
 }
 
 // Assumes that lock is already acquired.
+func (sc *ClusterStateCache) addAppWrapper(aw *arbv1.AppWrapper) error {
+	id := aw.Namespace + "/" + aw.Name
+	sc.AppWrappers[id] = aw.DeepCopy()
+	glog.V(10).Infof("AppWrapper %s added to cache.", id)
+	return nil
+}
+
+// Assumes that lock is already acquired.
+func (sc *ClusterStateCache) updateAppWrapper(oldNode, newAW *arbv1.AppWrapper) error {
+	id := newAW.Namespace + "/" + newAW.Name
+	if sc.Nodes[newAW.Name] != nil {
+		sc.AppWrappers[id] = newAW.DeepCopy()
+		return nil
+	}
+
+	return fmt.Errorf("AppWrapper <%s> does not exist", id)
+}
+
+func (sc *ClusterStateCache) deleteAppWrapper(aw *arbv1.AppWrapper) error {
+	id := aw.Namespace + "/" + aw.Name
+	if _, ok := sc.AppWrappers[id]; !ok {
+		return fmt.Errorf("AppWrapper <%s> does not exist", id)
+	}
+	delete(sc.AppWrappers, id)
+	return nil
+}
+
+// Assumes that lock is already acquired.
+func (sc *ClusterStateCache) AddAppWrapper(obj interface{}) {
+	aw, ok := obj.(*arbv1.AppWrapper)
+	if !ok {
+		glog.Errorf("Cannot convert to *arbv1.Queue: %v", obj)
+		return
+	}
+
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+
+	glog.V(4).Infof("Add AppWrapper(%s) into cache, spec(%#v)", aw.Name, aw.Spec)
+	err := sc.addAppWrapper(aw)
+	if err != nil {
+		glog.Errorf("Failed to add AppWrapper %s into cache: %v", aw.Name, err)
+		return
+	}
+	return
+}
+
+func (sc *ClusterStateCache) DeleteAppWrapper(obj interface{}) {
+	var aw *arbv1.AppWrapper
+	switch t := obj.(type) {
+	case *arbv1.AppWrapper:
+		aw = t
+	case cache.DeletedFinalStateUnknown:
+		var ok bool
+		aw, ok = t.Obj.(*arbv1.AppWrapper)
+		if !ok {
+			glog.Errorf("Cannot convert to *arbv1.AppWrapper: %v", t.Obj)
+			return
+		}
+	default:
+		glog.Errorf("Cannot convert to *arbv1.AppWrapper: %v", t)
+		return
+	}
+
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+
+	err := sc.deleteAppWrapper(aw)
+	if err != nil {
+		glog.Errorf("Failed to delete AppWrapper %s from cache: %v", aw.Name, err)
+		return
+	}
+	return
+}
+
+func (sc *ClusterStateCache) UpdateAppWrapper(oldObj, newObj interface{}) {
+	oldAW, ok := oldObj.(*arbv1.AppWrapper)
+	if !ok {
+		glog.Errorf("Cannot convert oldObj to *arbv1.AppWrapper: %v", oldObj)
+		return
+	}
+	newAW, ok := newObj.(*arbv1.AppWrapper)
+	if !ok {
+		glog.Errorf("Cannot convert newObj to *arbv1.AppWrapper: %v", newObj)
+		return
+	}
+
+	sc.Mutex.Lock()
+	defer sc.Mutex.Unlock()
+
+	err := sc.updateAppWrapper(oldAW, newAW)
+	if err != nil {
+		glog.Errorf("Failed to update AppWrapper %s into cache: %v", oldAW.Name, err)
+		return
+	}
+	return
+}
+
+// Assumes that lock is already acquired.
 func (sc *ClusterStateCache) setPDB(pdb *policyv1.PodDisruptionBudget) error {
 	job := arbapi.JobID(utils.GetController(pdb))
 
