@@ -9,6 +9,11 @@ spec:
     clusterScheduling:
       clusters:
       - name: cluster3
+    dispatchingWindow:
+      start:
+        desiredTimestamp: 2021-03-23T18:00:00Z
+    runtimeDuration:
+        expected: 4200s
   resources:
     GenericItems:
     - replicas: 1
