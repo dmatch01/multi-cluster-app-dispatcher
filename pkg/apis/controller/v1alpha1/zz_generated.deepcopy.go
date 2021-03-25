@@ -244,6 +244,7 @@ func (in *AppWrapperStatus) DeepCopyInto(out *AppWrapperStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
+	in.AggregatedResources.DeepCopyInto(&out.AggregatedResources)
 	return
 }
 

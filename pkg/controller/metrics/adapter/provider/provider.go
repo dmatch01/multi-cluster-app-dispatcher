@@ -17,6 +17,7 @@ limitations under the License.
 package provider
 
 import (
+	v1 "k8s.io/api/core/v1"
 	"net/http"
 	"strconv"
 	"strings"
@@ -388,38 +389,51 @@ func (p *testingProvider) ListAllMetrics() []provider.CustomMetricInfo {
 	return metrics
 }
 
+
 // Hack to dynamically load metrics
-func (p *testingProvider) generateQueueSpecs(clusternum int, jobname string, runtime metav1.Duration) (external_metrics.ExternalMetricValue, external_metrics.ExternalMetricValue){
+func (p *testingProvider) generateQueueSpecs(clusterName string, jobname string,
+		runtime metav1.Duration, desiredStartTime metav1.Time, resources v1.ResourceRequirements) (external_metrics.ExternalMetricValue,
+		external_metrics.ExternalMetricValue){
 	cpuMetric := external_metrics.ExternalMetricValue{}
 	memMetric := external_metrics.ExternalMetricValue{}
 	cpuMetric.MetricName = "queue-external-metric"
 	memMetric.MetricName = "queue-external-metric"
-	clusterName := "cluster" + strconv.Itoa(clusternum)
 	window := runtime.Duration.String()
-
+	startTime := desiredStartTime.Format(time.RFC3339)
 	cpuLabels := map[string]string {
 		"clusterID": clusterName,
 		"jobID": jobname,
 		"resource": "cpu",
-		"starttimestamp": "2021-03-02T18:00:00Z",
+		"starttimestamp": startTime,
 		"window": window,
 	}
 	memLabels := map[string]string {
 		"clusterID": clusterName,
 		"jobID": jobname,
 		"resource": "memory",
-		"starttimestamp": "2021-03-02T18:00:00Z",
+		"starttimestamp": startTime,
 		"window": window,
 	}
 	cpuMetric.MetricLabels = cpuLabels
 	memMetric.MetricLabels = memLabels
 	cpuMetric.Timestamp = metav1.Now()
-	cpuMetric.Value = *resource.NewQuantity(int64(1000), resource.DecimalSI)
-	memMetric.Timestamp = cpuMetric.Timestamp
-	memMetric.Value = *resource.NewQuantity(int64(1000000000), resource.DecimalSI)
+	cpuMetric.Value = resources.Requests.Cpu().DeepCopy()
+	memMetric.Value = resources.Requests.Memory().DeepCopy()
 	return cpuMetric, memMetric
 }
+// Hack to dynamically load metrics
+func (p *testingProvider) generateQueueSpecsAdapter(clusternum int, jobname string, runtime metav1.Duration) (external_metrics.ExternalMetricValue, external_metrics.ExternalMetricValue) {
+	clusterName := "cluster" + strconv.Itoa(clusternum)
+	desiredStartTime := metav1.Now()
 
+	requests := map[v1.ResourceName]resource.Quantity{}
+	requests[v1.ResourceMemory] = *resource.NewQuantity(int64(1000000000), resource.DecimalSI)
+	requests[v1.ResourceCPU] = *resource.NewQuantity(int64(1000), resource.DecimalSI)
+	aggregatedResources := v1.ResourceRequirements{
+		Requests: requests,
+	}
+	return p.generateQueueSpecs(clusterName, jobname, runtime, desiredStartTime, aggregatedResources)
+}
 
 // Hack to dynamically load cluster capacity metrics
 func (p *testingProvider) generateClusterCapacitySpecs(clusternum int, resourceType string, resourceAmount int) external_metrics.ExternalMetricValue{
@@ -440,20 +454,26 @@ func (p *testingProvider) generateClusterCapacitySpecs(clusternum int, resourceT
 func (p *testingProvider) loadDynamicQueueMetrics(matchingMetrics []external_metrics.ExternalMetricValue,
 				) []external_metrics.ExternalMetricValue {
 	runtime := metav1.Duration{ 600 * time.Second}
-	cpuMetric, memoryMetric := p.generateQueueSpecs(1,"default/job1", runtime)
+	cpuMetric, memoryMetric := p.generateQueueSpecsAdapter(1,"default/job1", runtime)
 	matchingMetrics = append(matchingMetrics, cpuMetric)
 	matchingMetrics = append(matchingMetrics, memoryMetric)
 
 	runtime = metav1.Duration{ 36000 * time.Second}
-	cpuMetric, memoryMetric = p.generateQueueSpecs(1,"default/job2",runtime)
+	cpuMetric, memoryMetric = p.generateQueueSpecsAdapter(1,"default/job2",runtime)
 	matchingMetrics = append(matchingMetrics, cpuMetric)
 	matchingMetrics = append(matchingMetrics, memoryMetric)
 
 	jobs := p.cache2.GetJobsQueued()
 	for _, job := range jobs {
 		jobname := job.Namespace + "/" + job.Name
-		runtime = metav1.Duration{ 7200 * time.Second}
-		cpuMetric, memoryMetric = p.generateQueueSpecs(1,jobname,runtime)
+		clusterName := "UnknownCluster"
+		if len(job.Spec.SchedSpec.ClusterScheduling.Clusters) > 0 {
+			clusterName = job.Spec.SchedSpec.ClusterScheduling.Clusters[0].Name
+		}
+		runtime := job.Spec.SchedSpec.RuntimeDuration.Expected
+		aggregatedResources := job.Status.AggregatedResources
+		desiredStartTime := job.Spec.SchedSpec.DispatchingWindow.Start.Desired
+		cpuMetric, memoryMetric = p.generateQueueSpecs(clusterName, jobname, runtime, desiredStartTime, aggregatedResources)
 		matchingMetrics = append(matchingMetrics, cpuMetric)
 		matchingMetrics = append(matchingMetrics, memoryMetric)
 	}

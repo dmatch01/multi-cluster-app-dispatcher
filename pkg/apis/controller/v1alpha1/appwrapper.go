@@ -205,6 +205,8 @@ type AppWrapperStatus struct {
 	// Represents the latest available observations of a appwrapper's current condition.
 	Conditions []AppWrapperCondition `json:"conditions,omitempty"`
 
+	// Represents Aggregated Resources
+	AggregatedResources v1.ResourceRequirements `json:"aggregatedResources,omitempty"`
 }
 
 type AppWrapperState string

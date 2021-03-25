@@ -21,6 +21,7 @@ import (
 	"github.com/IBM/multi-cluster-app-dispatcher/cmd/kar-controllers/app/options"
 	"github.com/golang/glog"
 	"github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/metrics/adapter"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"math"
 	"math/rand"
 	"strings"
@@ -482,6 +483,15 @@ func GetPodTemplate(qjobRes *arbv1.AppWrapperResource) (*v1.PodTemplateSpec, err
 
 }
 
+func (qjm *XController) updateAggregatedResourceStatus(aw *arbv1.AppWrapper, allocated *clusterstateapi.Resource) *arbv1.AppWrapper {
+	requests := map[v1.ResourceName]resource.Quantity{}
+	requests[v1.ResourceMemory] = *resource.NewQuantity(int64(allocated.Get(v1.ResourceMemory)), resource.DecimalSI)
+	requests[v1.ResourceCPU] = *resource.NewQuantity(int64(allocated.Get(v1.ResourceCPU)), resource.DecimalSI)
+	requests["nvidia.com/gpu"] = *resource.NewQuantity(int64(allocated.Get("nvidia.com/gpu")), resource.DecimalSI)
+	aw.Status.AggregatedResources.Requests = requests
+	return aw
+}
+
 func (qjm *XController) GetAggregatedResources(cqj *arbv1.AppWrapper) *clusterstateapi.Resource {
 	//todo: deprecate resource controllers
 	allocated := clusterstateapi.EmptyResource()
@@ -932,13 +942,16 @@ func (cc *XController) addQueueJob(obj interface{}) {
 				LastTransitionMicroTime: metav1.NowMicro(),
 			},
 		}
+		qjAggrResources := cc.GetAggregatedResources(qj)
+		qj = cc.updateAggregatedResourceStatus(qj, qjAggrResources)
 	} else {
 		glog.Warningf("[Informer-addQJ] Received and add by the informer for AppWrapper job %s which already has been seen and initialized current state %s with timestamp: %s, elapsed time of %.6f",
 						qj.Name, qj.Status.State, qj.Status.ControllerFirstTimestamp, time.Now().Sub(qj.Status.ControllerFirstTimestamp.Time).Seconds())
 	}
 
-	glog.V(10).Infof("[Informer-addQJ] %s Delay=%.6f seconds CreationTimestamp=%s ControllerFirstTimestamp=%s",
-		qj.Name, time.Now().Sub(qj.Status.ControllerFirstTimestamp.Time).Seconds(), qj.CreationTimestamp, qj.Status.ControllerFirstTimestamp)
+	glog.V(10).Infof("[Informer-addQJ] %s Delay=%.6f seconds CreationTimestamp=%s ControllerFirstTimestamp=%s, AggregatedResources=%v",
+		qj.Name, time.Now().Sub(qj.Status.ControllerFirstTimestamp.Time).Seconds(),
+		qj.CreationTimestamp, qj.Status.ControllerFirstTimestamp, qj.Status.AggregatedResources)
 
 	glog.V(4).Infof("[Informer-addQJ] enqueue %s &qj=%p Version=%s Status=%+v", qj.Name, qj, qj.ResourceVersion, qj.Status)
 	cc.enqueue(qj)
