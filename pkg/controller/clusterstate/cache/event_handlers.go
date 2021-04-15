@@ -480,12 +480,12 @@ func (sc *ClusterStateCache) addAppWrapper(aw *arbv1.AppWrapper) error {
 // Assumes that lock is already acquired.
 func (sc *ClusterStateCache) updateAppWrapper(oldNode, newAW *arbv1.AppWrapper) error {
 	id := newAW.Namespace + "/" + newAW.Name
-	if sc.Nodes[newAW.Name] != nil {
+	if sc.Nodes[id] != nil {
 		sc.AppWrappers[id] = newAW.DeepCopy()
 		return nil
 	}
 
-	return fmt.Errorf("AppWrapper <%s> does not exist", id)
+	return fmt.Errorf("AppWrapper %s does not exist", id)
 }
 
 func (sc *ClusterStateCache) deleteAppWrapper(aw *arbv1.AppWrapper) error {

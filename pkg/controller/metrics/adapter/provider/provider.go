@@ -185,7 +185,7 @@ func NewFakeProvider(client dynamic.Interface, mapper apimeta.RESTMapper, cluste
 		mapper:          mapper,
 		values:          make(map[CustomMetricResource]resource.Quantity),
 		externalMetrics: testingExternalMetrics,
-		cache2:		clusterStateCache,
+		cache2:		 clusterStateCache,
 	}
 	return provider, provider.webService()
 }
