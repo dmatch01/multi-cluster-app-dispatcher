@@ -1,3 +1,5 @@
+// +build private
+
 /*
 Copyright 2017 The Kubernetes Authors.
 
@@ -14,30 +16,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// This file contains structures that implement scheduling queue types.
-// Scheduling queues hold pods waiting to be scheduled. This file has two types
-// of scheduling queue: 1) a FIFO, which is mostly the same as cache.FIFO, 2) a
-// priority queue which has two sub queues. One sub-queue holds pods that are
-// being considered for scheduling. This is called activeQ. Another queue holds
-// pods that are already tried and are determined to be unschedulable. The latter
-// is called unschedulableQ.
-// FIFO is here for flag-gating purposes and allows us to use the traditional
-// scheduling queue when util.PodPriorityEnabled() returns false.
-
 package quotamanager
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
+	"github.com/IBM/multi-cluster-app-dispatcher/cmd/kar-controllers/app/options"
 	arbv1 "github.com/IBM/multi-cluster-app-dispatcher/pkg/apis/controller/v1alpha1"
 	listersv1 "github.com/IBM/multi-cluster-app-dispatcher/pkg/client/listers/controller/v1"
 	clusterstateapi "github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/clusterstate/api"
-	"k8s.io/klog"
+	"github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/quota"
+	qmlib "github.ibm.com/ai-foundation/quota-manager/quota"
+	qmlibutils "github.ibm.com/ai-foundation/quota-manager/quota/utils"
 	"io/ioutil"
+	"k8s.io/klog"
 	"math"
 	"net/http"
-	"net/http/httputil"
 	"reflect"
 	"strings"
 	"time"
@@ -50,26 +44,13 @@ const (
 	// AW Name used for building unique name for AW job
 	AppWrapperNamePrefix string = "_AWNAME_"
 )
-var quotaContext 	    = "quota_context"
 
-// QuotaManager is an interface quota management solutions
-type QuotaManager interface {
-	Fits(aw *arbv1.AppWrapper, resources *clusterstateapi.Resource, proposedPremptions []*arbv1.AppWrapper) (bool, []*arbv1.AppWrapper)
-	Release(aw *arbv1.AppWrapper) bool
-}
-
-// PriorityQueue implements a scheduling queue. It is an alternative to FIFO.
-// The head of PriorityQueue is the highest priority pending QJ. This structure
-// has two sub queues. One sub-queue holds QJ that are being considered for
-// scheduling. This is called activeQ and is a Heap. Another queue holds
-// pods that are already tried and are determined to be unschedulable. The latter
-// is called unschedulableQ.
-// Heap is already thread safe, but we need to acquire another lock here to ensure
-// atomicity of operations on the two data structures..
-type ResourcePlanManager struct {
+// QuotaManager implements a QuotaManagerInterface.
+type QuotaManager struct {
 	url 			string
 	appwrapperLister 	listersv1.AppWrapperLister
 	preemptionEnabled 	bool
+	quotaManagerBackend 	*qmlib.Manager
 }
 
 type QuotaGroup struct {
@@ -78,41 +59,34 @@ type QuotaGroup struct {
 }
 
 type Request struct {
-	Id          string   	  `json:"id"`
-	Groups      []QuotaGroup  `json:"groups"`
-	Demand      []int         `json:"demand"`
-	Priority    int           `json:"priority"`
-	Preemptable bool          `json:"preemptable"`
+	Id          string       `json:"id"`
+	Groups      []QuotaGroup `json:"groups"`
+	Demand      []int        `json:"demand"`
+	Priority    int          `json:"priority"`
+	Preemptable bool         `json:"preemptable"`
 }
 
 type QuotaResponse struct {
-	Id          string   	   `json:"id"`
-	Groups      []QuotaGroup   `json:"groups"`
-	Demand      []int    	   `json:"demand"`
-	Priority    int      	   `json:"priority"`
-	Preemptable bool     	   `json:"preemptable"`
-	PreemptIds  []string 	   `json:"preemptedIds"`
-	CreateDate  string   	   `json:"dateCreated"`
+	Id          string       `json:"id"`
+	Groups      []QuotaGroup `json:"groups"`
+	Demand      []int        `json:"demand"`
+	Priority    int          `json:"priority"`
+	Preemptable bool         `json:"preemptable"`
+	PreemptIds  []string     `json:"preemptedIds"`
+	CreateDate  string       `json:"dateCreated"`
 }
 
 type TreeNode struct {
-	Allocation	string     	`json:"allocation"`
-	Quota		string  	`json:"quota"`
-	Name		string   	`json:"name"`
-	Hard		bool     	`json:"hard"`
-	Children	[]TreeNode   	`json:"children"`
-	Parent 		string 		`json:"parent"`
+	Allocation	string		`json:"allocation"`
+	Quota		string		`json:"quota"`
+	Name		string		`json:"name"`
+	Hard		bool		`json:"hard"`
+	Children	[]TreeNode	`json:"children"`
+	Parent 		string		`json:"parent"`
 }
 
-
-// NewQuotaManager initializes a new scheduling queue.
-func NewQuotaManager() QuotaManager {
-		return NewResourcePlanManager( nil,"", false)
-}
-
-// Making sure that PriorityQueue implements SchedulingQueue.
-var _ = QuotaManager(&ResourcePlanManager{})
-
+// Making sure that QuotaManager implements QuotaManager.
+var _ = quota.QuotaManagerInterface(&QuotaManager{})
 
 func parseId(id string) (string, string) {
 	ns := ""
@@ -145,35 +119,67 @@ func createId(ns string, n string) string {
 	return id
 }
 
-func NewResourcePlanManager(awJobLister listersv1.AppWrapperLister, quotaManagerUrl string, preemptionEnabled bool) *ResourcePlanManager {
-	rpm := &ResourcePlanManager{
-		appwrapperLister: awJobLister,
-		url: quotaManagerUrl,
-		preemptionEnabled: preemptionEnabled,
+func NewQuotaManager(awJobLister listersv1.AppWrapperLister, serverOptions *options.ServerOption) *QuotaManager {
+
+	if serverOptions.QuotaEnabled == false {
+		klog.Infof("[NewQuotaManager] Quota management is not enabled.")
+		return nil
 	}
-	return rpm
+
+	qm := &QuotaManager{
+		appwrapperLister:    awJobLister,
+		url:                 serverOptions.QuotaRestURL,
+		preemptionEnabled:   serverOptions.Preemption,
+		quotaManagerBackend: qmlib.NewManager(),
+	}
+
+	// create a quota manager
+	treeFileName := "TestTreeDoNotMerge.json"
+
+	treeJsonString, err := ioutil.ReadFile(treeFileName)
+	if err != nil {
+		klog.Errorf("[NewQuotaManager] Error reading quota tree file: %s", treeFileName)
+	}
+
+	// set mode of quota manager
+	qm.quotaManagerBackend.SetMode(qmlib.Normal)
+
+	// add a quota tree from file
+	testTreeName, err := qm.quotaManagerBackend.AddTreeFromString(string(treeJsonString))
+	if err != nil {
+		klog.Errorf("[NewQuotaManager] Error adding tree %s: %v", testTreeName, err)
+	} else {
+		klog.Infof("[NewQuotaManager] Added Quota Manager Backend tree %s successfully.", testTreeName)
+	}
+
+	treeNames := qm.quotaManagerBackend.GetTreeNames()
+
+	for _, treeName := range treeNames {
+		klog.Infof("[NewQuotaManager] Quota Manager Backend tree %s initialized successfully.", treeName)
+	}
+	return qm
 }
 
 // Recrusive call to add names of Tree
-func (rpm *ResourcePlanManager) addChildrenNodes(parentNode TreeNode, treeIDs []string) ([]string) {
+func (qm *QuotaManager) addChildrenNodes(parentNode TreeNode, treeIDs []string) ([]string) {
 	if len(parentNode.Children) > 0 {
 		for _, childNode := range parentNode.Children {
 			klog.V(10).Infof("[getQuotaTreeIDs] Quota tree response child node from quota mananger: %s", childNode.Name)
-			treeIDs = rpm.addChildrenNodes(childNode, treeIDs)
+			treeIDs = qm.addChildrenNodes(childNode, treeIDs)
 		}
 	}
 	treeIDs = append(treeIDs, parentNode.Name)
 	return treeIDs
 }
 
-func (rpm *ResourcePlanManager) getQuotaTreeIDs() ([]string) {
+func (qm *QuotaManager) getQuotaTreeIDs() ([]string) {
 	var treeIDs []string
 	// If a url does not exists then assume fits quota
-	if len(rpm.url) < 1 {
+	if len(qm.url) < 1 {
 		return treeIDs
 	}
 
-	uri := rpm.url + "/json"
+	uri := qm.url + "/json"
 
 	klog.V(10).Infof("[getQuotaTreeIDs] Sending GET request to uri: %s", uri)
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
@@ -207,7 +213,7 @@ func (rpm *ResourcePlanManager) getQuotaTreeIDs() ([]string) {
 			// Loop over root nodes of trees and add names of each node in tree.
 			for _, treeroot := range quotaTreesResponse {
 				klog.V(6).Infof("[getQuotaTreeIDs] Quota tree response root node from quota mananger: %s", treeroot.Name)
-				treeIDs = rpm.addChildrenNodes(treeroot, treeIDs)
+				treeIDs = qm.addChildrenNodes(treeroot, treeIDs)
 			}
 		}
 
@@ -228,11 +234,11 @@ func isValidQuota(quotaGroup QuotaGroup, qmTreeIDs []string) bool {
 	return false
 }
 
-func (rpm *ResourcePlanManager) getQuotaDesignation(aw *arbv1.AppWrapper) ([]QuotaGroup) {
+func (qm *QuotaManager) getQuotaDesignation(aw *arbv1.AppWrapper) ([]QuotaGroup) {
 	var groups []QuotaGroup
 
 	// Get list of quota management tree IDs
-	qmTreeIDs := rpm.getQuotaTreeIDs()
+	qmTreeIDs := qm.getQuotaTreeIDs()
 	if len(qmTreeIDs) < 1 {
 		klog.Warningf("[getQuotaDesignation] No valid quota management IDs found for AppWrapper Job: %s/%s",
 									aw.Namespace, aw.Name)
@@ -277,85 +283,94 @@ func (rpm *ResourcePlanManager) getQuotaDesignation(aw *arbv1.AppWrapper) ([]Quo
 
 	return groups
 }
+func (qm *QuotaManager) buildRequest(aw *arbv1.AppWrapper,
+			awResDemands *clusterstateapi.Resource) (*qmlib.ConsumerInfo, error){
+	awId := createId(aw.Namespace, aw.Name)
+	if len(awId) <= 0 {
+		err := fmt.Errorf("[buildRequest] Request failed due to invalid AppWrapper due to empty namespace: %s or name:%s.", aw.Namespace, aw.Name)
+		return nil, err
+	}
 
-func (rpm *ResourcePlanManager) Fits(aw *arbv1.AppWrapper, awResDemands *clusterstateapi.Resource,
+	groups := qm.getQuotaDesignation(aw)
+	unPreemptable := !qm.preemptionEnabled
+	awCPU_Demand := int(math.Trunc(awResDemands.MilliCPU))
+	awMem_Demand := int(math.Trunc(awResDemands.Memory)/1000000)
+
+	demand := map[string]int{}
+	demand["cpu"] = awCPU_Demand
+	demand["memory"] = awMem_Demand
+	priority := int(aw.Spec.Priority)
+
+	consumerTreeSpec := &qmlibutils.JConsumerTreeSpec {
+		ID:		awId,
+		TreeName:      	groups[0].GroupContext,
+		GroupID:      	groups[0].GroupId,
+		Request:	demand,
+		Priority:	priority,
+		CType: 		0,
+		UnPreemptable:	unPreemptable,
+	}
+
+	var consumerTrees []qmlibutils.JConsumerTreeSpec
+	consumerTrees[0] = *consumerTreeSpec
+
+	consumerSpec := &qmlibutils.JConsumerSpec  {
+		ID:	awId,
+		Trees:	consumerTrees,
+	}
+
+	// JConsumer : JSON consumer
+	consumer := &qmlibutils.JConsumer  {
+		Kind: 	qmlibutils.DefaultConsumerKind,
+		Spec:	*consumerSpec,
+	}
+
+	consumerInfo, err := qmlib.NewConsumerInfo(*consumer)
+
+	return consumerInfo, err
+}
+
+func (qm *QuotaManager) Fits(aw *arbv1.AppWrapper, awResDemands *clusterstateapi.Resource,
 					proposedPreemptions []*arbv1.AppWrapper) (bool, []*arbv1.AppWrapper) {
 
 	// Handle uninitialized quota manager
-	if len(rpm.url) <= 0 {
-		return true, proposedPreemptions
-	}
-	awId := createId(aw.Namespace, aw.Name)
-	if len(awId) <= 0 {
-		klog.Errorf("[Fits] Request failed due to invalid AppWrapper due to empty namespace: %s or name:%s.", aw.Namespace, aw.Name)
-		return false, nil
-	}
-
-	groups := rpm.getQuotaDesignation(aw)
-	preemptable := rpm.preemptionEnabled
-	awCPU_Demand := int(math.Trunc(awResDemands.MilliCPU))
-	awMem_Demand := int(math.Trunc(awResDemands.Memory)/1000000)
-	var demand []int
-	demand = append(demand, awCPU_Demand)
-	demand = append(demand, awMem_Demand)
-	priority := int(aw.Spec.Priority)
-	req := Request{
-		Id:          awId,
-		Groups:      groups,
-		Demand:      demand,
-		Priority:    priority,
-		Preemptable: preemptable,
-	}
-
 	doesFit := false
 	// If a url does not exists then assume fits quota
-	if len(rpm.url) < 1 {
+	if len(qm.url) <= 0 {
 		klog.V(4).Infof("[Fits] No quota manager exists, %+v meets quota by default.", awResDemands)
+		doesFit = true
 		return doesFit, nil
 	}
 
-	uri := rpm.url + "/quota/alloc"
-	buf := new(bytes.Buffer)
-	err := json.NewEncoder(buf).Encode(req)
+	consumerInfo, err := qm.buildRequest(aw, awResDemands)
 	if err != nil {
-		klog.Errorf("[Fits] Failed encoding of request: %v, err=%#v.", req, err)
+		klog.Errorf("[Fits] Creation of quota request failed: %s/%s, err=%#v.", aw.Name, aw.Namespace, err)
 		return doesFit, nil
 	}
 
 	var preemptIds []*arbv1.AppWrapper
-	klog.V(4).Infof("[Fits] Sending request: %v in buffer: %v, buffer size: %v, to uri: %s", req, buf, buf.Len(), uri)
-	response, err := http.Post(uri, "application/json; charset=utf-8", buf)
-	defer response.Body.Close()
-	dump, err := httputil.DumpResponse(response, true)
-	klog.V(10).Infof("[getQuotaTreeIDs] POST Response dump: %q", dump)
+
+	consumerID := consumerInfo.GetID()
+	qm.quotaManagerBackend.AddConsumer(consumerInfo)
+	treeNames := qm.quotaManagerBackend.GetTreeNames()
+
+	klog.V(4).Infof("[Fits] Sending quota allocation request: %v ", consumerInfo)
+	allocResponse, err := qm.quotaManagerBackend.Allocate(treeNames[0], consumerID)
 
 	if err != nil {
-		klog.Errorf("[Fits] Fail to add access quotamanager: %s, err=%#v.", uri, err)
-		preemptIds = nil
-	} else {
-		body, err := ioutil.ReadAll(response.Body)
-		if err != nil {
-			klog.Errorf("[Fits] Failed to read preemption Ids from the quota manager body: %s, error=%#v", string(body), err)
-		}
-		var quotaResponse QuotaResponse
-		if err := json.Unmarshal(body, &quotaResponse); err != nil {
-			klog.Errorf("[Fits] Failed to decode json from quota manager body: %s, error=%#v", string(body), err)
-		} else {
-			klog.V(6).Infof("[Fits] Quota response object from quota mananger body: %v", quotaResponse)
-		}
-		klog.V(4).Infof("[Fits] Response from quota mananger status: %s", response.Status)
-		statusCode := response.StatusCode
-		klog.V(4).Infof("[Fits] Response from quota mananger status code: %v", statusCode)
-		if statusCode == 200 {
-			doesFit = true
-			preemptIds = rpm.getAppWrappers(quotaResponse.PreemptIds)
-		}
+		klog.Errorf("[Fits] Error allocating consumer: %s/%s, msg=%s, err=%#v.",
+								aw.Name, aw.Namespace, allocResponse.GetMessage(), err)
+		return 	doesFit, nil
 	}
+
+	doesFit = allocResponse.IsAllocated()
+	preemptIds = qm.getAppWrappers(allocResponse.GetPreemptedIds())
+
 	return doesFit, preemptIds
 }
 
 
-func  (rpm *ResourcePlanManager) getAppWrappers(preemptIds []string) []*arbv1.AppWrapper{
+func  (qm *QuotaManager) getAppWrappers(preemptIds []string) []*arbv1.AppWrapper{
 	var aws []*arbv1.AppWrapper
 	if len(preemptIds) <= 0 {
 		return nil
@@ -367,7 +382,7 @@ func  (rpm *ResourcePlanManager) getAppWrappers(preemptIds []string) []*arbv1.Ap
 			klog.Errorf("[getAppWrappers] Failed to parse AppWrapper id from quota manager, parse string: %s.  Preemption of this Id will be ignored.", preemptId)
 			continue
 		}
-		aw, e := rpm.appwrapperLister.AppWrappers(awNamespace).Get(awName)
+		aw, e := qm.appwrapperLister.AppWrappers(awNamespace).Get(awName)
 		if e != nil {
 			klog.Errorf("[getAppWrappers] Failed to get AppWrapper from API Cache %s/%s, err=%v.  Preemption of this Id will be ignored.",
 				awNamespace, awName, e)
@@ -382,10 +397,10 @@ func  (rpm *ResourcePlanManager) getAppWrappers(preemptIds []string) []*arbv1.Ap
 	}
 	return aws
 }
-func (rpm *ResourcePlanManager) Release(aw *arbv1.AppWrapper) bool {
+func (qm *QuotaManager) Release(aw *arbv1.AppWrapper) bool {
 
 	// Handle uninitialized quota manager
-	if len(rpm.url) < 0 {
+	if len(qm.url) < 0 {
 		return true
 	}
 
@@ -396,7 +411,7 @@ func (rpm *ResourcePlanManager) Release(aw *arbv1.AppWrapper) bool {
 		return false
 	}
 
-	uri := rpm.url + "/quota/release/" + awId
+	uri := qm.url + "/quota/release/" + awId
 	klog.V(4).Infof("[Release] Sending request to release resources for: %s ", uri)
 
 	// Create client

@@ -13,27 +13,16 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
-package main
+
+
+package quota
 
 import (
-	"flag"
-	"fmt"
-	"github.com/IBM/multi-cluster-app-dispatcher/cmd/kar-controllers/app"
-	"github.com/IBM/multi-cluster-app-dispatcher/cmd/kar-controllers/app/options"
-	"os"
+	arbv1 "github.com/IBM/multi-cluster-app-dispatcher/pkg/apis/controller/v1alpha1"
+	clusterstateapi "github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/clusterstate/api"
 )
 
-func main() {
-	flag.Parse()
-
-	s := options.NewServerOption()
-	s.AddFlags(flag.CommandLine)
-
-	//	flag.InitFlags()
-	s.CheckOptionOrDie()
-
-	if err := app.Run(s); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
+type QuotaManagerInterface interface {
+	Fits(aw *arbv1.AppWrapper, resources *clusterstateapi.Resource, proposedPremptions []*arbv1.AppWrapper) (bool, []*arbv1.AppWrapper)
+	Release(aw *arbv1.AppWrapper) bool
 }

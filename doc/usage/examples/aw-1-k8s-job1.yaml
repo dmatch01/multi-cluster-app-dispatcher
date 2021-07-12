@@ -2,7 +2,7 @@ apiVersion: mcad.ibm.com/v1alpha1
 kind: AppWrapper
 metadata:
   name: aw-generic-statefulset-2
-  namespace: test1
+  namespace: default
 spec:
   schedulingSpec:
     minAvailable: 2
@@ -11,13 +11,13 @@ spec:
       replicas: 1
       metadata:
         name: aw-generic-statefulset-2
-        namespace: test1
+        namespace: default
       generictemplate:
         apiVersion: apps/v1
         kind: StatefulSet
         metadata:
           name: aw-generic-statefulset-2
-          namespace: test1
+          namespace: default
           labels:
             app: aw-generic-statefulset-2
         spec:

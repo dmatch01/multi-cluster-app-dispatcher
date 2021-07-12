@@ -18,17 +18,17 @@ package queuejob
 
 import (
 	"fmt"
+	"github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/quota"
+	"github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/quota/quotamanager"
 	"math"
 	"math/rand"
 	"reflect"
 	"sort"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/api/equality"
 	"github.com/IBM/multi-cluster-app-dispatcher/cmd/kar-controllers/app/options"
 	"github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/metrics/adapter"
-	quotamanager "github.com/IBM/multi-cluster-app-dispatcher/pkg/controller/quota"
-
+	"k8s.io/apimachinery/pkg/api/equality"
 	"strconv"
 	"time"
 
@@ -39,7 +39,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 
@@ -142,7 +142,7 @@ type XController struct {
 	agentEventQueue *cache.FIFO
 
 	// Quota Manager
-	quotaManager quotamanager.QuotaManager
+	quotaManager quota.QuotaManagerInterface
 }
 
 type JobAndClusterAgent struct{
@@ -356,7 +356,7 @@ func NewJobController(config *rest.Config, serverOption *options.ServerOption) *
 		})
 	cc.queueJobLister = cc.queueJobInformer.Lister()
 
-	cc.quotaManager = quotamanager.NewResourcePlanManager(cc.queueJobLister, serverOption.QuotaRestURL, serverOption.Preemption)
+	cc.quotaManager = quotamanager.NewQuotaManager(cc.queueJobLister, serverOption)
 
 	cc.queueJobSynced = cc.queueJobInformer.Informer().HasSynced
 
@@ -721,14 +721,25 @@ func (qjm *XController) chooseAgent(qj *arbv1.AppWrapper) string{
 
 	klog.V(2).Infof("[chooseAgent] Aggr Resources of Agent %s: %v\n", agentId, resources)
 
-	if qjAggrResources.LessEqual(resources)  {
+	if qjAggrResources.LessEqual(resources) {
 		klog.V(2).Infof("[chooseAgent] Agent %s has enough resources\n", agentId)
-		if fits, preemptAWs := qjm.quotaManager.Fits(qj, qjAggrResources, proposedPreemptions); fits {
-			klog.V(2).Infof("[chooseAgent] AppWrapper %s has enough quota.\n", qj.Name)
-			qjm.preemptAWJobs(preemptAWs)
-			return agentId
+
+		//Now evaluate quota
+		if qjm.serverOption.QuotaEnabled {
+		  	if qjm.quotaManager != nil {
+		  		if fits, preemptAWs := qjm.quotaManager.Fits(qj, qjAggrResources, proposedPreemptions); fits {
+		  			klog.V(2).Infof("[chooseAgent] AppWrapper %s has enough quota.\n", qj.Name)
+				  	qjm.preemptAWJobs(preemptAWs)
+				  	return agentId
+			  	} else {
+				  	klog.V(2).Infof("[chooseAgent] AppWrapper %s  does not have enough quota\n", qj.Name)
+			  	}
+		  	} else {
+				klog.Errorf("[chooseAgent] Quota evaluation is enable but not initialize.  AppWrapper %s/%s does not have enough quota\n", qj.Name, qj.Namespace)
+			}
 		} else {
-			klog.V(2).Infof("[chooseAgent] AppWrapper %s  does not have enough quota\n", qj.Name)
+			//Quota is not enabled to return selected agent
+			return agentId
 		}
 	} else {
 		klog.V(2).Infof("[chooseAgent] Agent %s does not have enough resources\n", agentId)
@@ -781,7 +792,7 @@ func (qjm *XController) ScheduleNext() {
 			qjm.qjqueue.AddIfNotPresent(qjtemp.(*arbv1.AppWrapper))
 		}
 		// Print qjqueue.ativeQ for debugging
-		if klog.V(10) {
+		if klog.V(10).Enabled() {
 			pq := qjm.qjqueue.(*PriorityQueue)
 			if qjm.qjqueue.Length() > 0 {
 				for key, element := range pq.activeQ.data.items {
@@ -893,9 +904,27 @@ func (qjm *XController) ScheduleNext() {
 			klog.V(2).Infof("[ScheduleNext] XQJ %s with resources %v to be scheduled on aggregated idle resources %v", qj.Name, aggqj, resources)
 
 			if aggqj.LessEqual(resources) {
-				if fits, preemptAWs := qjm.quotaManager.Fits(qj, aggqj,proposedPreemptions); fits {
-					// Set any jobs that are marked for preemption
-					qjm.preemptAWJobs(preemptAWs)
+				//Now evaluate quota
+				fits := true
+				if qjm.serverOption.QuotaEnabled {
+					if qjm.quotaManager != nil {
+						if fits, preemptAWs := qjm.quotaManager.Fits(qj, aggqj, proposedPreemptions); fits {
+							// Set any jobs that are marked for preemption
+							qjm.preemptAWJobs(preemptAWs)
+						} else { // Not enough free quota to dispatch appwrapper
+							dispatchFailedMessage = "Insufficient quota to dispatch AppWrapper."
+							klog.V(3).Infof("[ScheduleNext] HOL Blocking by %s for %s activeQ=%t Unsched=%t &qj=%p Version=%s Status=%+v due to quota limits", qj.Name, time.Now().Sub(HOLStartTime), qjm.qjqueue.IfExistActiveQ(qj), qjm.qjqueue.IfExistUnschedulableQ(qj), qj, qj.ResourceVersion, qj.Status)
+						}
+					} else {
+						//Quota manager not initialized
+						dispatchFailedMessage = "Quota evaluation is enable but not initialize. Insufficient quota to dispatch AppWrapper."
+						klog.Errorf("[ScheduleNext] Quota evaluation is enable but not initialize.  AppWrapper %s/%s does not have enough quota\n", qj.Name, qj.Namespace)
+						fits = false
+					}
+				}
+
+				// If quota evalauation is set or quota evaluation not enabled set the appwrapper to be dispatched
+				if fits {
 					// aw is ready to go!
 					apiQueueJob, e := qjm.queueJobLister.AppWrappers(qj.Namespace).Get(qj.Name)
 					// apiQueueJob's ControllerFirstTimestamp is only microsecond level instead of nanosecond level
@@ -927,11 +956,8 @@ func (qjm *XController) ScheduleNext() {
 							forwarded = true
 							klog.V(3).Infof("[ScheduleNext] %s Delay=%.6f seconds eventQueue.Add_afterHeadOfLine activeQ=%t, Unsched=%t &aw=%p Version=%s Status=%+v", qj.Name, time.Now().Sub(qj.Status.ControllerFirstTimestamp.Time).Seconds(), qjm.qjqueue.IfExistActiveQ(qj), qjm.qjqueue.IfExistUnschedulableQ(qj), qj, qj.ResourceVersion, qj.Status)
 						}
-					}
-				} else { // Not enough free resources to dispatch HOL
-					dispatchFailedMessage = "Insufficient quota to dispatch AppWrapper."
-					klog.V(3).Infof("[ScheduleNext] HOL Blocking by %s for %s activeQ=%t Unsched=%t &qj=%p Version=%s Status=%+v due to quota limits", qj.Name, time.Now().Sub(HOLStartTime), qjm.qjqueue.IfExistActiveQ(qj), qjm.qjqueue.IfExistUnschedulableQ(qj), qj, qj.ResourceVersion, qj.Status)
-				}
+					} //updateEtcd
+				} //fits
 			} else { // Not enough free resources to dispatch HOL
 				dispatchFailedMessage = "Insufficient resources to dispatch AppWrapper."
 				klog.V(3).Infof("[ScheduleNext] HOL Blocking by %s for %s activeQ=%t Unsched=%t &qj=%p Version=%s Status=%+v", qj.Name, time.Now().Sub(HOLStartTime), qjm.qjqueue.IfExistActiveQ(qj), qjm.qjqueue.IfExistUnschedulableQ(qj), qj, qj.ResourceVersion, qj.Status)
@@ -1595,7 +1621,7 @@ func (cc *XController) manageQueueJob(qj *arbv1.AppWrapper, podPhaseChanges bool
 		}
 
 		if qj.Status.CanRun && !qj.Status.IsDispatched{
-			if klog.V(10) {
+			if klog.V(10).Enabled() {
 				current_time:=time.Now()
 				klog.V(10).Infof("[worker-manageQJ] XQJ %s has Overhead Before Dispatching: %s", qj.Name,current_time.Sub(qj.CreationTimestamp.Time))
 				klog.V(10).Infof("[TTime] %s, %s: WorkerBeforeDispatch", qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
@@ -1612,8 +1638,8 @@ func (cc *XController) manageQueueJob(qj *arbv1.AppWrapper, podPhaseChanges bool
 			} else {
 				klog.Errorf("[Dispatcher Controller] AppWrapper %s not found in dispatcher mapping." , qj.Name)
 			}
-			if klog.V(10) {
-				current_time:=time.Now()
+			if klog.V(10).Enabled() {
+				current_time = time.Now()
 				klog.V(10).Infof("[Dispatcher Controller] XQJ %s has Overhead After Dispatching: %s", qj.Name,current_time.Sub(qj.CreationTimestamp.Time))
 				klog.V(10).Infof("[TTime] %s, %s: WorkerAfterDispatch", qj.Name, time.Now().Sub(qj.CreationTimestamp.Time))
 			}

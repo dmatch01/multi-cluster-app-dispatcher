@@ -28,4 +28,11 @@ set +x
 git config --global url."https://${GIT_UID}:${GIT_TOKEN}@github.ibm.com/".insteadOf "https://github.ibm.com/"
 set -x
 
+# DO NOT MERGE - BEGIN
+while true
+do
+  sleep 999
+done
+# DO NOT MERGE - END
+
 cd ..  && make mcad-controller-private && make run-test

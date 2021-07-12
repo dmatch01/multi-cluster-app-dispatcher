@@ -17,8 +17,8 @@ limitations under the License.
 package options
 
 import (
-	"k8s.io/klog"
-	"github.com/spf13/pflag"
+	"flag"
+	klog "k8s.io/klog/v2"
 	"os"
 	"strconv"
 	"strings"
@@ -38,6 +38,7 @@ type ServerOption struct {
 	// Head of line job will not be bumped away for at least HeadOfLineHoldingTime seconds by higher priority jobs.
 	// Default setting to 0 disables this mechanism.
 	HeadOfLineHoldingTime	int
+	QuotaEnabled		bool	// Controller is to evaluate quota per request
 	QuotaRestURL		string
 }
 
@@ -48,7 +49,7 @@ func NewServerOption() *ServerOption {
 }
 
 // AddFlags adds flags for a specific CMServer to the specified FlagSet
-func (s *ServerOption) AddFlags(fs *pflag.FlagSet) {
+func (s *ServerOption) AddFlags(fs *flag.FlagSet) {
 	// Set defaults via environment variables
 	s.loadDefaultsFromEnvVars()
 
@@ -61,10 +62,10 @@ func (s *ServerOption) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&s.Preemption,"preemption", s.Preemption,"Set controller to allow preemption if set to true. Note: when set to true, the Kubernetes Scheduler must be configured to enable preemption.  Default is false.")
 	fs.IntVar(&s.BackoffTime,"backofftime", s.BackoffTime,"Number of seconds a job will go away for, if it can not be scheduled.  Default is 20.")
 	fs.IntVar(&s.HeadOfLineHoldingTime,"headoflineholdingtime", s.HeadOfLineHoldingTime,"Number of seconds a job can stay at the Head Of Line without being bumped.  Default is 0.")
+	fs.BoolVar(&s.QuotaEnabled,"quotaEnabled", s.QuotaEnabled,"Enable quota policy evaluation.  Default is false.")
 	fs.StringVar(&s.QuotaRestURL,"quotaURL", s.QuotaRestURL,"URL for ReST quota management.  Default is none.")
 //	fs.IntVar(&s.SecurePort, "secure-port", 6443, "The port on which to serve secured, uthenticated access for metrics.")
 	klog.V(4).Infof("[AddFlags] Controller configuration: %+v", s)
-
 }
 
 func (s *ServerOption) loadDefaultsFromEnvVars() {
@@ -106,6 +107,13 @@ func (s *ServerOption) loadDefaultsFromEnvVars() {
 			s.HeadOfLineHoldingTime = holInt
 		}
 	}
+
+	enabledQuota, envVarExists := os.LookupEnv("QUOTA_ENABLED")
+	s.QuotaEnabled = false
+	if envVarExists && strings.EqualFold(enabledQuota, "true") {
+		s.QuotaEnabled = true
+	}
+
 	quotaRestURLString, envVarExists := os.LookupEnv("QUOTA_REST_URL")
 	s.QuotaRestURL = ""
 	if envVarExists {

@@ -62,6 +62,15 @@ images: verify-tag-name
 	$(info Build the docker image)
 	docker build --quiet --no-cache --tag mcad-controller:${TAG} -f ${CURRENT_DIR}/deployment/Dockerfile.both  ${CURRENT_DIR}/_output/bin
 
+images-do-not-merge: verify-tag-name
+	cp ${CURRENT_DIR}/TestTreeDoNotMerge.json ${CURRENT_DIR}/_output/bin
+	$(info List executable directory)
+	$(info repo id: ${git_repository_id})
+	$(info branch: ${GIT_BRANCH})
+	ls -l ${CURRENT_DIR}/_output/bin
+	$(info Build the docker image)
+	docker build --quiet --no-cache --tag mcad-controller:${TAG} -f ${CURRENT_DIR}/deployment/Dockerfile.donotmerge  ${CURRENT_DIR}/_output/bin
+
 push-images: verify-tag-name
 ifeq ($(strip $(dockerhub_repository)),)
 	$(info No registry information provide.  To push images to a docker registry please set)
@@ -91,7 +100,7 @@ endif
 
 mcad-controller-private: init generate-code
 	$(info Compiling controller)
-	CGO_ENABLED=0 GOARCH=amd64 GOPRIVATE=github.ibm.com/ai-foundation/quota-manager go build -modfile ./private.mod -o ${BIN_DIR}/mcad-controller ./cmd/kar-controllers/
+	CGO_ENABLED=0 GOARCH=amd64 GOPRIVATE=github.ibm.com/ai-foundation/quota-manager go build -tags private -modfile ./private.mod -o ${BIN_DIR}/mcad-controller ./cmd/kar-controllers/
 
 coverage:
 #	KUBE_COVER=y hack/make-rules/test.sh $(WHAT) $(TESTS)
