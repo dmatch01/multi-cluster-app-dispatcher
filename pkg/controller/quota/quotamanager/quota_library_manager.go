@@ -29,7 +29,7 @@ import (
 	qmlib "github.ibm.com/ai-foundation/quota-manager/quota"
 	qmlibutils "github.ibm.com/ai-foundation/quota-manager/quota/utils"
 	"io/ioutil"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"math"
 	"net/http"
 	"reflect"
@@ -284,7 +284,7 @@ func (qm *QuotaManager) getQuotaDesignation(aw *arbv1.AppWrapper) ([]QuotaGroup)
 	return groups
 }
 func (qm *QuotaManager) buildRequest(aw *arbv1.AppWrapper,
-			awResDemands *clusterstateapi.Resource) (*qmlib.ConsumerInfo, error){
+			awResDemands *clusterstateapi.Resource) (*qmlib.ConsumerInfo, error) {
 	awId := createId(aw.Namespace, aw.Name)
 	if len(awId) <= 0 {
 		err := fmt.Errorf("[buildRequest] Request failed due to invalid AppWrapper due to empty namespace: %s or name:%s.", aw.Namespace, aw.Name)
@@ -301,6 +301,16 @@ func (qm *QuotaManager) buildRequest(aw *arbv1.AppWrapper,
 	demand["memory"] = awMem_Demand
 	priority := int(aw.Spec.Priority)
 
+	//DO NOT MERGE - BEGIN
+	if len(groups) < 1 {
+		var uGroup = QuotaGroup{
+			GroupContext: 	"UNKNOWNCONTEXT",
+			GroupId:	"UNKNOWNID",
+		}
+		groups = append(groups, uGroup)
+	}
+	//DO NOT MERGE - END
+
 	consumerTreeSpec := &qmlibutils.JConsumerTreeSpec {
 		ID:		awId,
 		TreeName:      	groups[0].GroupContext,
@@ -312,7 +322,7 @@ func (qm *QuotaManager) buildRequest(aw *arbv1.AppWrapper,
 	}
 
 	var consumerTrees []qmlibutils.JConsumerTreeSpec
-	consumerTrees[0] = *consumerTreeSpec
+	consumerTrees = append(consumerTrees, *consumerTreeSpec)
 
 	consumerSpec := &qmlibutils.JConsumerSpec  {
 		ID:	awId,
@@ -336,9 +346,8 @@ func (qm *QuotaManager) Fits(aw *arbv1.AppWrapper, awResDemands *clusterstateapi
 	// Handle uninitialized quota manager
 	doesFit := false
 	// If a url does not exists then assume fits quota
-	if len(qm.url) <= 0 {
-		klog.V(4).Infof("[Fits] No quota manager exists, %+v meets quota by default.", awResDemands)
-		doesFit = true
+	if qm.quotaManagerBackend == nil {
+		klog.V(4).Infof("[Fits] No quota manager backend exists, %+v fails quota by default.", awResDemands)
 		return doesFit, nil
 	}
 
@@ -359,7 +368,7 @@ func (qm *QuotaManager) Fits(aw *arbv1.AppWrapper, awResDemands *clusterstateapi
 
 	if err != nil {
 		klog.Errorf("[Fits] Error allocating consumer: %s/%s, msg=%s, err=%#v.",
-								aw.Name, aw.Namespace, allocResponse.GetMessage(), err)
+								aw.Name, aw.Namespace, err)
 		return 	doesFit, nil
 	}
 
