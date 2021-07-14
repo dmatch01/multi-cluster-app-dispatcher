@@ -43,6 +43,9 @@ const (
 
 	// AW Name used for building unique name for AW job
 	AppWrapperNamePrefix string = "_AWNAME_"
+
+	//Quota Manager Forest Name
+	QuotaManagerForestName string = "MCAD-CONTROLLER"
 )
 
 // QuotaManager implements a QuotaManagerInterface.
@@ -345,7 +348,8 @@ func (qm *QuotaManager) Fits(aw *arbv1.AppWrapper, awResDemands *clusterstateapi
 
 	// Handle uninitialized quota manager
 	doesFit := false
-	// If a url does not exists then assume fits quota
+
+	// If a Quota Manager Library instance does not exists then assume does not quota
 	if qm.quotaManagerBackend == nil {
 		klog.V(4).Infof("[Fits] No quota manager backend exists, %+v fails quota by default.", awResDemands)
 		return doesFit, nil
@@ -408,52 +412,30 @@ func  (qm *QuotaManager) getAppWrappers(preemptIds []string) []*arbv1.AppWrapper
 }
 func (qm *QuotaManager) Release(aw *arbv1.AppWrapper) bool {
 
+	released := false
+
 	// Handle uninitialized quota manager
-	if len(qm.url) < 0 {
-		return true
+	if qm.quotaManagerBackend == nil {
+		klog.Errorf("[Release] No quota manager backend exists, Quota release %s/%s fails quota by default.",
+								aw.Name, aw.Namespace)
+		return released
 	}
 
-	released := false
 	awId := createId(aw.Namespace, aw.Name)
 	if len(awId) <= 0 {
 		klog.Errorf("[Release] Request failed due to invalid AppWrapper due to empty namespace: %s or name:%s.", aw.Namespace, aw.Name)
-		return false
-	}
-
-	uri := qm.url + "/quota/release/" + awId
-	klog.V(4).Infof("[Release] Sending request to release resources for: %s ", uri)
-
-	// Create client
-	client := &http.Client{}
-
-	// Create request
-	req, err := http.NewRequest("DELETE", uri, nil)
-	if err != nil {
-		klog.Errorf("[Release] Failed to create http delete request for : %s, err=%#v.", awId, err)
 		return released
 	}
 
-	// Fetch Request
-	resp, err := client.Do(req)
-	if err != nil {
-		klog.Errorf("[Release] Failed http delete request for: %s, err=%#v.", awId, err)
-		return released
-	}
-	defer resp.Body.Close()
+	treeNames := qm.quotaManagerBackend.GetTreeNames()
+	released = qm.quotaManagerBackend.DeAllocate(treeNames[0], awId)
 
-	// Read Response Body
-	respBody, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		klog.V(4).Infof("[Release] Failed to aquire response from http delete request id: %s, err=%#v.", awId, err)
+	if !released {
+		klog.Errorf("[Release] Quota release for %s/%s failed.",
+			aw.Name, aw.Namespace)
 	} else {
-		klog.V(4).Infof("[Release] Response from quota mananger body: %s", string(respBody))
-	}
-
-	klog.V(4).Infof("[Release] Response from quota mananger status: %s", resp.Status)
-	statusCode := resp.StatusCode
-	klog.V(4).Infof("[Release] Response from quota mananger status code: %v", statusCode)
-	if statusCode == 204 {
-		released = true
+		klog.V(8).Infof("[Release] Quota release for %s/%s successful.",
+			aw.Name, aw.Namespace)
 	}
 
 	return released
